@@ -20,22 +20,6 @@ import {
 } from "@/lib/wedding-studio-data";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Aanssha — AI Wedding Decor Studio" },
-      {
-        name: "description",
-        content:
-          "Multimodal AI wedding decor studio that combines Pinterest-style inspiration images with a venue photo to synthesize complete wedding setups, color palettes, and vendor briefs.",
-      },
-      { property: "og:title", content: "Aanssha — AI Wedding Decor Studio" },
-      {
-        property: "og:description",
-        content:
-          "See any empty venue decorated using Pinterest inspiration images, refine zones, and walk through the AI architecture.",
-      },
-    ],
-  }),
   component: Index,
 });
 
@@ -307,7 +291,7 @@ function Index() {
           }}
           className="font-serif text-2xl tracking-wider text-foreground whitespace-nowrap shrink-0"
         >
-          AANSSHA
+          WEDDING DECOR STUDIO
         </a>
 
         <nav className="hidden md:flex items-center gap-7 text-sm">
@@ -439,10 +423,10 @@ function Index() {
 
       <footer className="mt-16 border-t border-border bg-card/50 py-6 text-center text-xs text-muted-foreground">
         <div className="mx-auto flex max-w-[1400px] flex-col items-center justify-between gap-2 px-6 sm:flex-row">
-          <span>Aanssha Multimodal Wedding Spatial Synthesis Studio</span>
+          <span>Multimodal Wedding Spatial Synthesis Studio</span>
           <span>
             Photography: "Before" photos are real venues; "After" shows the same venue decorated by
-            Aanssha AI
+            the Wedding Decor Studio Engine
           </span>
         </div>
       </footer>
@@ -1444,7 +1428,7 @@ function ArchitectureWalkthroughView({
 
   const samplePayload = JSON.stringify(
     {
-      pipeline: "aanssha-multimodal-v2",
+      pipeline: "wedding-decor-multimodal-v2",
       baseVenue: {
         id: venue.id,
         name: venue.name,
