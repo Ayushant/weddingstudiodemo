@@ -104,6 +104,16 @@ export type InspirationPin = {
   costMultiplier: number;
 };
 
+export type BudgetGuardStatus = {
+  maxImageCalls: number;
+  usedImageCalls: number;
+  remainingImageCalls: number;
+  estimatedSpendUsd: number;
+  hardCapUsd: number;
+  rateLimitPerMinute: number;
+  isLocked: boolean;
+};
+
 export type SynthesisRequest = {
   venueId: string;
   venueName: string;
@@ -114,8 +124,10 @@ export type SynthesisRequest = {
   floralDensity: "Minimal" | "Balanced" | "Lush" | "Couture";
   lightingKelvin: number;
   focalStructure: string;
+  customEditPrompt?: string;
   wantLiveImageRender?: boolean;
   venueImageBase64?: string;
+  pinterestImagesBase64?: string[];
 };
 
 export type SynthesisResponse = {
@@ -130,6 +142,7 @@ export type SynthesisResponse = {
   spatialPins: SpatialPin[];
   vendorBoq: VendorLineItem[];
   detectedLayerCoords?: Partial<Record<DecorLayerId, { x: number; y: number; scale: number }>>;
+  budgetGuard?: BudgetGuardStatus;
   pipelineLatencyMs: number;
 };
 
@@ -388,7 +401,11 @@ export function buildDeterministicSynthesis(req: SynthesisRequest): SynthesisRes
     .slice(0, 2)
     .join(" × ")} Edition`;
 
-  const curatorialNote = `Synthesized ${activePins.length} Pinterest inspiration references onto ${req.venueName} (${req.venueType}). The layout preserves the primary axial sightline and ceiling rigging grid while layering ${req.floralDensity.toLowerCase()} ${floralSummary} around a central ${req.focalStructure} under ${req.lightingKelvin}K illumination for ${req.guestCount} guests.`;
+  const customNoteSuffix = req.customEditPrompt?.trim()
+    ? ` Custom Client Direction Applied: "${req.customEditPrompt.trim()}".`
+    : "";
+
+  const curatorialNote = `Synthesized ${activePins.length} Pinterest inspiration references onto ${req.venueName} (${req.venueType}). The layout preserves the primary axial sightline and ceiling rigging grid while layering ${req.floralDensity.toLowerCase()} ${floralSummary} around a central ${req.focalStructure} under ${req.lightingKelvin}K illumination for ${req.guestCount} guests.${customNoteSuffix}`;
 
   const masterImagePrompt = [
     `Photorealistic architectural wedding transformation of ${req.venueName} (${req.venueType}).`,
@@ -399,8 +416,13 @@ export function buildDeterministicSynthesis(req: SynthesisRequest): SynthesisRes
     `- Textiles & Drapery: ${activePins.map((p) => p.draperyNotes).join("; ")}.`,
     `- Lighting & Atmosphere: ${lightingSummary}.`,
     `- Color Harmony: ${uniqueSwatches.map((s) => `${s.name} (${s.hex})`).join(", ")}.`,
+    req.customEditPrompt?.trim()
+      ? `- SPECIFIC CLIENT EDIT INSTRUCTION: ${req.customEditPrompt.trim()}.`
+      : null,
     `Shot on medium-format 35mm architectural lens, natural shadow falloff, editorial luxury wedding photography.`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const spatialPins: SpatialPin[] = [
     {
@@ -480,10 +502,9 @@ export function buildDeterministicSynthesis(req: SynthesisRequest): SynthesisRes
     conceptTitle,
     curatorialNote,
     masterImagePrompt,
-    modelUsed:
-      "gemini-3.8-flash (Multimodal Spatial & Style Engine) + Interactive Studio Compositor",
+    modelUsed: "gemini-3.8-flash (Multimodal Spatial & Style Engine)",
     imageEngineStatus:
-      "Multimodal spatial synthesis active: Uploaded venue perspective locked and decorated with interactive floral, chandelier, drapery & aisle layers.",
+      "Hard $1.00 USD Budget Guard Active (Max 20 Live Image Renders = $0.60 cap). Preset venues run at $0.00 cost.",
     preservedStructures: [
       "Primary Axial Vanishing Point & Horizon Line (FOV 62°)",
       "Overhead Ceiling Truss / Chandelier Rigging Plane",
@@ -492,6 +513,15 @@ export function buildDeterministicSynthesis(req: SynthesisRequest): SynthesisRes
     blendedPalette: uniqueSwatches,
     spatialPins,
     vendorBoq,
+    budgetGuard: {
+      maxImageCalls: 20,
+      usedImageCalls: 0,
+      remainingImageCalls: 20,
+      estimatedSpendUsd: 0,
+      hardCapUsd: 0.6,
+      rateLimitPerMinute: 3,
+      isLocked: false,
+    },
     pipelineLatencyMs: 640,
   };
 }

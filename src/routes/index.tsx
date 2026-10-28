@@ -177,6 +177,8 @@ function Index() {
   const [activeTab, setActiveTab] = useState<NavTab>("studio");
   const [venue, setVenue] = useState<Venue>(VENUES[0]!);
   const [demoUploadedFileName, setDemoUploadedFileName] = useState<string | null>(null);
+  const [customVenueDataUrl, setCustomVenueDataUrl] = useState<string | null>(null);
+  const [customEditPrompt, setCustomEditPrompt] = useState<string>("");
   const [customPins, setCustomPins] = useState<InspirationPin[]>([]);
   const [selectedPinIds, setSelectedPinIds] = useState<string[]>(VENUES[0]!.defaultPins);
   const [guestCount, setGuestCount] = useState<number>(420);
@@ -204,15 +206,32 @@ function Index() {
 
   const allPins = [...customPins, ...INSPIRATION_PINS];
 
+  // Fetch initial server budget status on mount
+  useEffect(() => {
+    void fetch("/api/ai/budget")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((budget) => {
+        if (budget) {
+          setSynthesis((prev) => ({ ...prev, budgetGuard: budget }));
+        }
+      })
+      .catch(() => {
+        // Ignore offline errors
+      });
+  }, []);
+
   const handleSelectVenue = (nextVenue: Venue, uploadedLabel?: string | null) => {
     setVenue(nextVenue);
     setDemoUploadedFileName(uploadedLabel ?? null);
+    if (!uploadedLabel) {
+      setCustomVenueDataUrl(null);
+    }
     setSelectedPinIds(nextVenue.defaultPins);
     const activePinTitles = allPins
       .filter((p) => nextVenue.defaultPins.includes(p.id))
       .map((p) => p.title);
-    setSynthesis(
-      buildDeterministicSynthesis({
+    setSynthesis((prev) => ({
+      ...buildDeterministicSynthesis({
         venueId: nextVenue.id,
         venueName: nextVenue.name,
         venueType: nextVenue.type,
@@ -222,19 +241,89 @@ function Index() {
         floralDensity,
         lightingKelvin,
         focalStructure,
+        customEditPrompt,
       }),
-    );
+      budgetGuard: prev.budgetGuard,
+    }));
   };
 
-  const triggerLiveSynthesis = async (
-    overrideVenue?: Venue,
-    overridePinIds?: string[],
-    uploadedLabel?: string | null,
-  ) => {
-    const targetVenue = overrideVenue ?? venue;
-    const targetPinIds = overridePinIds ?? selectedPinIds;
-    if (uploadedLabel !== undefined) {
-      setDemoUploadedFileName(uploadedLabel);
+  // Helper to convert any image URL or DataURL into a resized JPEG DataURL (max 1024px) to keep Paid API token usage tiny
+  const toCompactBase64 = async (src: string): Promise<string | undefined> => {
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Image load failed"));
+        img.src = src;
+      });
+      const maxDim = 1024;
+      const scale = Math.min(1, maxDim / Math.max(img.width || 1024, img.height || 640));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round((img.width || 1024) * scale);
+      canvas.height = Math.round((img.height || 640) * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return undefined;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", 0.84);
+    } catch {
+      return src.startsWith("data:") ? src : undefined;
+    }
+  };
+
+  const triggerLiveSynthesis = async (options?: {
+    overrideVenue?: Venue;
+    overridePinIds?: string[];
+    uploadedLabel?: string | null;
+    uploadedDataUrl?: string | null;
+    wantLiveImageRender?: boolean;
+  }) => {
+    let targetVenue = options?.overrideVenue ?? venue;
+    let targetPinIds = options?.overridePinIds ?? selectedPinIds;
+
+    // If user entered a custom prompt edit, align showcase venue if no explicit venue override was passed
+    if (!options?.overrideVenue && customEditPrompt.trim()) {
+      const lowerPrompt = customEditPrompt.toLowerCase();
+      if (
+        lowerPrompt.includes("chandelier") ||
+        lowerPrompt.includes("orchid") ||
+        lowerPrompt.includes("champagne")
+      ) {
+        targetVenue = VENUES[2]!;
+        targetPinIds = VENUES[2]!.defaultPins;
+        setVenue(targetVenue);
+        setSelectedPinIds(targetPinIds);
+      } else if (
+        lowerPrompt.includes("peony") ||
+        lowerPrompt.includes("pastel") ||
+        lowerPrompt.includes("fairy") ||
+        lowerPrompt.includes("garden")
+      ) {
+        targetVenue = VENUES[1]!;
+        targetPinIds = VENUES[1]!.defaultPins;
+        setVenue(targetVenue);
+        setSelectedPinIds(targetPinIds);
+      } else if (
+        lowerPrompt.includes("crimson") ||
+        lowerPrompt.includes("velvet") ||
+        lowerPrompt.includes("brass") ||
+        lowerPrompt.includes("royal")
+      ) {
+        targetVenue = VENUES[0]!;
+        targetPinIds = VENUES[0]!.defaultPins;
+        setVenue(targetVenue);
+        setSelectedPinIds(targetPinIds);
+      }
+    }
+
+    const activeCustomVenueUrl =
+      options?.uploadedDataUrl !== undefined ? options.uploadedDataUrl : customVenueDataUrl;
+
+    if (options?.uploadedLabel !== undefined) {
+      setDemoUploadedFileName(options.uploadedLabel);
+    }
+    if (options?.uploadedDataUrl !== undefined) {
+      setCustomVenueDataUrl(options.uploadedDataUrl);
     }
 
     setIsSynthesizing(true);
@@ -244,6 +333,18 @@ function Index() {
     const stepTimer3 = window.setTimeout(() => setPipelineStep(4), 960);
 
     const activePins = allPins.filter((p) => targetPinIds.includes(p.id));
+    let venueImageBase64: string | undefined;
+    const pinterestImagesBase64: string[] = [];
+
+    if (options?.wantLiveImageRender) {
+      venueImageBase64 = await toCompactBase64(activeCustomVenueUrl ?? targetVenue.empty);
+      for (const p of activePins.slice(0, 2)) {
+        const pinSrc = p.customImageUrl ?? ASSET_MAP[p.imageKey];
+        const b64 = await toCompactBase64(pinSrc);
+        if (b64) pinterestImagesBase64.push(b64);
+      }
+    }
+
     const payload = {
       venueId: targetVenue.id,
       venueName: targetVenue.name,
@@ -254,6 +355,10 @@ function Index() {
       floralDensity,
       lightingKelvin,
       focalStructure,
+      customEditPrompt,
+      wantLiveImageRender: Boolean(options?.wantLiveImageRender),
+      venueImageBase64,
+      pinterestImagesBase64,
     };
 
     try {
@@ -266,10 +371,16 @@ function Index() {
         const data = (await response.json()) as SynthesisResponse;
         setSynthesis(data);
       } else {
-        setSynthesis(buildDeterministicSynthesis(payload));
+        setSynthesis((prev) => ({
+          ...buildDeterministicSynthesis(payload),
+          budgetGuard: prev.budgetGuard,
+        }));
       }
     } catch {
-      setSynthesis(buildDeterministicSynthesis(payload));
+      setSynthesis((prev) => ({
+        ...buildDeterministicSynthesis(payload),
+        budgetGuard: prev.budgetGuard,
+      }));
     } finally {
       window.clearTimeout(stepTimer1);
       window.clearTimeout(stepTimer2);
@@ -313,7 +424,7 @@ function Index() {
         <button
           onClick={() => {
             if (activeTab !== "studio") setActiveTab("studio");
-            void triggerLiveSynthesis();
+            void triggerLiveSynthesis({ wantLiveImageRender: false });
           }}
           className="rounded-sm bg-primary px-4 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 whitespace-nowrap shrink-0"
         >
@@ -342,8 +453,13 @@ function Index() {
             venue={venue}
             onSelectVenue={(v) => handleSelectVenue(v, null)}
             demoUploadedFileName={demoUploadedFileName}
-            onDemoUploadVenue={(fileName) => {
-              // Smart demo upload flow: maps the uploaded file cleanly onto our pre-edited photorealistic venue flow!
+            customVenueDataUrl={customVenueDataUrl}
+            onClearCustomRender={() => {
+              setCustomVenueDataUrl(null);
+              setDemoUploadedFileName(null);
+              setSynthesis((prev) => ({ ...prev, generatedImageDataUrl: undefined }));
+            }}
+            onDemoUploadVenue={(fileName, dataUrl) => {
               const lower = fileName.toLowerCase();
               const matchedVenue =
                 lower.includes("garden") || lower.includes("lawn")
@@ -353,13 +469,18 @@ function Index() {
                     : VENUES[0]!;
               setVenue(matchedVenue);
               setSelectedPinIds(matchedVenue.defaultPins);
-              void triggerLiveSynthesis(matchedVenue, matchedVenue.defaultPins, fileName);
+              void triggerLiveSynthesis({
+                overrideVenue: matchedVenue,
+                overridePinIds: matchedVenue.defaultPins,
+                uploadedLabel: fileName,
+                uploadedDataUrl: dataUrl,
+                wantLiveImageRender: false,
+              });
             }}
             allPins={allPins}
             selectedPinIds={selectedPinIds}
             onChangeSelectedPins={(nextIds) => {
               setSelectedPinIds(nextIds);
-              // Also sync the showcased venue if the newly clicked pin belongs to a specific pre-edited venue
               const latestPinId = nextIds[nextIds.length - 1];
               const latestPin = allPins.find((p) => p.id === latestPinId);
               let nextVenue = venue;
@@ -369,13 +490,21 @@ function Index() {
                 else if (latestPin.imageKey === "hallDecor") nextVenue = VENUES[0]!;
                 setVenue(nextVenue);
               }
-              void triggerLiveSynthesis(nextVenue, nextIds);
+              void triggerLiveSynthesis({
+                overrideVenue: nextVenue,
+                overridePinIds: nextIds,
+                wantLiveImageRender: false,
+              });
             }}
             onAddCustomPin={(pin) => {
               setCustomPins((prev) => [pin, ...prev]);
               const nextIds = [pin.id, ...selectedPinIds.slice(0, 3)];
               setSelectedPinIds(nextIds);
-              void triggerLiveSynthesis(venue, nextIds);
+              void triggerLiveSynthesis({
+                overrideVenue: venue,
+                overridePinIds: nextIds,
+                wantLiveImageRender: false,
+              });
             }}
             guestCount={guestCount}
             setGuestCount={setGuestCount}
@@ -385,10 +514,13 @@ function Index() {
             setLightingKelvin={setLightingKelvin}
             focalStructure={focalStructure}
             setFocalStructure={setFocalStructure}
+            customEditPrompt={customEditPrompt}
+            setCustomEditPrompt={setCustomEditPrompt}
             isSynthesizing={isSynthesizing}
             pipelineStep={pipelineStep}
             synthesis={synthesis}
-            onSynthesize={() => void triggerLiveSynthesis()}
+            onSynthesize={() => void triggerLiveSynthesis({ wantLiveImageRender: false })}
+            onRenderPaidImage={() => void triggerLiveSynthesis({ wantLiveImageRender: true })}
             onOpenArchitecture={() => setActiveTab("architecture")}
             onOpenVendorBrief={() => setActiveTab("vendor")}
           />
@@ -599,6 +731,8 @@ function LiveFusionStudio({
   venue,
   onSelectVenue,
   demoUploadedFileName,
+  customVenueDataUrl,
+  onClearCustomRender,
   onDemoUploadVenue,
   allPins,
   selectedPinIds,
@@ -612,17 +746,22 @@ function LiveFusionStudio({
   setLightingKelvin,
   focalStructure,
   setFocalStructure,
+  customEditPrompt,
+  setCustomEditPrompt,
   isSynthesizing,
   pipelineStep,
   synthesis,
   onSynthesize,
+  onRenderPaidImage,
   onOpenArchitecture,
   onOpenVendorBrief,
 }: {
   venue: Venue;
   onSelectVenue: (v: Venue) => void;
   demoUploadedFileName: string | null;
-  onDemoUploadVenue: (fileName: string) => void;
+  customVenueDataUrl: string | null;
+  onClearCustomRender: () => void;
+  onDemoUploadVenue: (fileName: string, dataUrl: string | null) => void;
   allPins: InspirationPin[];
   selectedPinIds: string[];
   onChangeSelectedPins: (ids: string[]) => void;
@@ -635,10 +774,13 @@ function LiveFusionStudio({
   setLightingKelvin: (k: number) => void;
   focalStructure: string;
   setFocalStructure: (f: string) => void;
+  customEditPrompt: string;
+  setCustomEditPrompt: (s: string) => void;
   isSynthesizing: boolean;
   pipelineStep: number;
   synthesis: SynthesisResponse;
   onSynthesize: () => void;
+  onRenderPaidImage: () => void;
   onOpenArchitecture: () => void;
   onOpenVendorBrief: () => void;
 }) {
@@ -646,12 +788,17 @@ function LiveFusionStudio({
   const [activeHotspotId, setActiveHotspotId] = useState<number>(1);
   const [showPromptDrawer, setShowPromptDrawer] = useState<boolean>(false);
 
-  // Demo upload handler: accepts any image file during the live presentation and runs the curated pre-edited venue flow!
+  // Reads uploaded venue image for live Paid API generation while also mapping to our pre-edited showcase venue
   const handleVenueFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const cleanName = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ");
-    onDemoUploadVenue(cleanName || "Client Venue Photo");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : null;
+      onDemoUploadVenue(cleanName || "Client Venue Photo", dataUrl);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handlePinFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -999,22 +1146,76 @@ function LiveFusionStudio({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onSynthesize}
-              disabled={isSynthesizing}
-              className="w-full rounded-sm bg-primary py-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
-            >
-              {isSynthesizing
-                ? "Running Multimodal Venue + Pinterest Synthesis…"
-                : "Synthesize Complete Wedding Setup →"}
-            </button>
+            <div className="space-y-2 border-t border-border pt-3">
+              <label className="block text-xs font-medium text-foreground">
+                Live AI Prompt Direction (Optional — for Paid Nano Banana Render)
+              </label>
+              <input
+                type="text"
+                value={customEditPrompt}
+                onChange={(e) => setCustomEditPrompt(e.target.value)}
+                placeholder="e.g., Add white orchid mandap, crystal chandeliers & candlelit mirror aisle…"
+                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground"
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  "White orchid mandap + crystal chandeliers",
+                  "Pastel blush peony arch + fairy lights",
+                  "Royal crimson velvet stage + brass candle aisle",
+                ].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setCustomEditPrompt(preset)}
+                    className="rounded-sm border border-border bg-background px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    + {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={onSynthesize}
+                disabled={isSynthesizing}
+                className="w-full rounded-sm border border-foreground bg-card py-2.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-60"
+              >
+                {isSynthesizing ? "Synthesizing…" : "Instant Preset Flow ($0.00)"}
+              </button>
+
+              <button
+                type="button"
+                onClick={onRenderPaidImage}
+                disabled={isSynthesizing || Boolean(synthesis.budgetGuard?.isLocked)}
+                className="w-full rounded-sm bg-primary py-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+              >
+                {synthesis.budgetGuard?.isLocked
+                  ? "Budget Cap Locked (<$1.00)"
+                  : `Render Live AI Image ($0.03 · ${synthesis.budgetGuard?.remainingImageCalls ?? 20} left)`}
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* RIGHT COLUMN (7 cols): Pre-Edited Photorealistic Before/After Flow */}
+        {/* RIGHT COLUMN (7 cols): Pre-Edited Photorealistic Before/After Flow + Live Nano Banana Output */}
         <div className="space-y-6 lg:col-span-7">
           <div className="border border-border bg-card p-6">
+            {/* Strict <$1.00 USD Rate Limiter Banner */}
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border border-border bg-secondary/40 px-3.5 py-2 text-xs">
+              <span className="font-medium text-foreground">
+                Strict $1.00 USD Budget Guard Active (Hard Cap: $
+                {(synthesis.budgetGuard?.hardCapUsd ?? 0.6).toFixed(2)} USD · Max{" "}
+                {synthesis.budgetGuard?.rateLimitPerMinute ?? 3} renders/min)
+              </span>
+              <span className="font-mono tabular-nums text-primary font-medium">
+                Spend: ${(synthesis.budgetGuard?.estimatedSpendUsd ?? 0).toFixed(2)} / $0.60 USD (
+                {synthesis.budgetGuard?.remainingImageCalls ?? 20}/
+                {synthesis.budgetGuard?.maxImageCalls ?? 20} renders left)
+              </span>
+            </div>
+
             {/* Output Toolbar */}
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
               <div>
@@ -1031,6 +1232,15 @@ function LiveFusionStudio({
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                {synthesis.generatedImageDataUrl && (
+                  <button
+                    type="button"
+                    onClick={onClearCustomRender}
+                    className="rounded-sm border border-border bg-background px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-secondary whitespace-nowrap shrink-0"
+                  >
+                    Reset to Preset Venue Pair
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowLocks((v) => !v)}
@@ -1078,11 +1288,15 @@ function LiveFusionStudio({
               </div>
             )}
 
-            {/* Main Before / After Interactive Viewport using our crisp pre-edited venue pairs */}
+            {/* Main Before / After Interactive Viewport */}
             <div className="mt-4">
               <BeforeAfterCanvas
-                before={venue.empty}
-                after={venue.decor}
+                before={
+                  synthesis.generatedImageDataUrl && customVenueDataUrl
+                    ? customVenueDataUrl
+                    : venue.empty
+                }
+                after={synthesis.generatedImageDataUrl ?? venue.decor}
                 pins={synthesis.spatialPins}
                 activePinId={activeHotspot?.id ?? null}
                 onSelectPin={(id) => setActiveHotspotId(id)}
@@ -1095,7 +1309,7 @@ function LiveFusionStudio({
                   Drag slider ⇆ to compare Empty Venue vs. AI Decorated Setup · Click numbered pins
                   (1–4) to inspect zone specs
                 </span>
-                <span className="font-mono text-[11px]">{venue.name}</span>
+                <span className="font-mono text-[11px]">{synthesis.imageEngineStatus}</span>
               </div>
             </div>
 

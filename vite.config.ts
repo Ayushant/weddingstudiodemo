@@ -1,15 +1,32 @@
-// @lovable.dev/vite-tanstack-config already includes the following — do NOT add them manually
-// or the app will break with duplicate plugins:
-//   - TanStack devtools (dev-only, first), tanstackStart, viteReact, tailwindcss, tsConfigPaths,
-//     nitro (build-only using cloudflare as a default target), VITE_* env injection, @ path alias,
-//     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
-// You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
-import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { defineConfig as baseDefineConfig } from "@lovable.dev/vite-tanstack-config";
+import type { ConfigEnv, PluginOption, UserConfig } from "vite";
 
-export default defineConfig({
+const rawConfigFn = baseDefineConfig({
   tanstackStart: {
-    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
-    // nitro/vite builds from this
     server: { entry: "server" },
   },
-});
+}) as (env: ConfigEnv) => Promise<UserConfig>;
+
+function filterPluginOption(plugin: PluginOption): PluginOption {
+  if (!plugin) return plugin;
+  if (Array.isArray(plugin)) {
+    return plugin.map(filterPluginOption).filter(Boolean);
+  }
+  if (typeof plugin === "object" && "name" in plugin && typeof plugin.name === "string") {
+    if (
+      plugin.name.startsWith("@tanstack/devtools") ||
+      plugin.name.startsWith("lovable:assets-proxy")
+    ) {
+      return null;
+    }
+  }
+  return plugin;
+}
+
+export default async function defineConfig(env: ConfigEnv): Promise<UserConfig> {
+  const resolved = await rawConfigFn(env);
+  if (Array.isArray(resolved.plugins)) {
+    resolved.plugins = resolved.plugins.map(filterPluginOption).filter(Boolean);
+  }
+  return resolved;
+}
