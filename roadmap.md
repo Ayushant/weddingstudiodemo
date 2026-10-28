@@ -1,4 +1,5 @@
 # Roadmap
+
 - [x] Lookbook: empty vs decorated venue (hall, garden, banquet) + palettes
 - [x] Venue & Brief (per screenshot)
 - [x] Style Profile

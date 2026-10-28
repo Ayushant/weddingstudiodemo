@@ -1,0 +1,6 @@
+{
+  "name": "Aanssha — AI Wedding Decor Studio",
+  "description": "Multimodal AI wedding decor studio that combines Pinterest-style inspiration images with a venue photo to synthesize complete wedding setups, color palettes, and vendor briefs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
